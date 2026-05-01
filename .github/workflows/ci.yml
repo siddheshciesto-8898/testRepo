@@ -1,0 +1,74 @@
+name: Fast CI
+
+on: [push]
+
+jobs:
+  laravel-tests:
+    runs-on: [self-hosted, Linux]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Copy .env
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+
+      - name: Get Composer Cache Directory
+        id: composer-cache-dir
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer Dependencies
+        id: composer-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            ${{ steps.composer-cache-dir.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install Composer Dependencies
+        if: steps.composer-cache.outputs.cache-hit != 'true'
+        run: composer update --no-interaction --prefer-dist --no-progress --ignore-platform-req=ext-curl
+
+      - name: Generate App Key
+        run: php artisan key:generate
+
+      - name: Get Changed PHP Files
+        id: changed-files
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            **/*.php
+
+      - name: Show Changed Files
+        run: echo "${{ steps.changed-files.outputs.all_changed_files }}"
+
+      - name: Run Code Quality Checks
+        run: |
+          FAILED=0
+          FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+
+          if [ -z "$FILES" ]; then
+            echo "No PHP files changed. Skipping code quality checks."
+          else
+            echo "Running PHPStan..."
+            php vendor/bin/phpstan analyse $FILES --memory-limit=1G || FAILED=1
+
+            echo "Running PHPCS..."
+            php vendor/bin/phpcs $FILES || FAILED=1
+
+            echo "Running Pint..."
+            php vendor/bin/pint --test $FILES || FAILED=1
+          fi
+
+          echo "Running Naming Check..."
+          php tests/checkNaming.php || FAILED=1
+
+          exit $FAILED
